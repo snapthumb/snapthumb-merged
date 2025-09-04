@@ -96,8 +96,8 @@ export default function SnapthumbLanding() {
           <div className="border-t border-white/10 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div>© {new Date().getFullYear()} Snapthumb</div>
             <div className="flex gap-4">
-              <a href="/privacy">Privacy</a>
-              <a href="/terms">Terms</a>
+              <a href="/privacy.html">Privacy</a>
+              <a href="/terms.html">Terms</a>
             </div>
           </div>
         </footer>
