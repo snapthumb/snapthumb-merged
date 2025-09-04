@@ -1,7 +1,6 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
-
 /** Snapthumb — App.tsx (feature-rich, fully patched & rendered) */
 
 type Mode = "screenshot" | "video";
