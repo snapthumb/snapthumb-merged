@@ -5,7 +5,7 @@ export default function SnapthumbLanding() {
     <div className="min-h-screen bg-black text-white">
       {/* Header */}
       <header className="mx-auto max-w-6xl px-6 py-6 flex items-center justify-between">
-        <div className="text-lg font-semibold">Snapthumb</div>
+        <div className="text-lg font-semibold tracking-tight">Snapthumb</div>
         <nav className="flex gap-6 text-sm">
           <a href="#features" className="opacity-80 hover:opacity-100">Features</a>
           <a href="#faq" className="opacity-80 hover:opacity-100">FAQ</a>
@@ -13,7 +13,7 @@ export default function SnapthumbLanding() {
         </nav>
       </header>
 
-      {/* Main content */}
+      {/* Main */}
       <main className="mx-auto max-w-6xl px-6">
         {/* Hero */}
         <section className="py-16 md:py-24 grid md:grid-cols-2 gap-10 items-center">
@@ -24,6 +24,9 @@ export default function SnapthumbLanding() {
             <p className="mt-4 text-lg opacity-90 max-w-prose">
               Grab a frame, drop your logo, add text, and export under 2MB.
               Pro results without bloated software.
+            </p>
+            <p className="mt-3 text-sm opacity-70">
+              1) Import video → 2) Pick frame → 3) Add logo/text → 4) Export &lt;2MB
             </p>
             <div className="mt-8 flex gap-3">
               <Link
@@ -44,7 +47,7 @@ export default function SnapthumbLanding() {
             </p>
           </div>
 
-          {/* Hero image (uses your snapthumb-preview.png) */}
+          {/* Hero image (uses your social preview) */}
           <div className="rounded-2xl overflow-hidden border border-white/10">
             <img
               src="/snapthumb-preview.png"
@@ -68,7 +71,7 @@ export default function SnapthumbLanding() {
             </li>
             <li className="p-5 rounded-2xl border border-white/10">
               <div className="font-medium">Under 2MB exports</div>
-              <p className="text-sm opacity-80 mt-1">Optimized for YouTube’s limits.</p>
+              <p className="text-sm opacity-80 mt-1">Optimized defaults for YouTube’s limits.</p>
             </li>
           </ul>
         </section>
