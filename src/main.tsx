@@ -10,7 +10,7 @@ import { Analytics } from "@vercel/analytics/react";
 const RootRouter: React.FC = () => (
   <BrowserRouter>
     <Routes>
-      {/* Public homepage → Forge */}
+      {/* Public homepage → Snapthumb */}
       <Route path="/" element={<SnapthumbLanding />} />
 
       {/* Private/staging tool → only accessible via direct link */}
