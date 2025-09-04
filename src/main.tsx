@@ -26,5 +26,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
     <Analytics />
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<SnapthumbLanding />} />
+        <Route path="/app" element={<App />} />
+        {/* optional: catch-all back to home */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
   </React.StrictMode>
 );
