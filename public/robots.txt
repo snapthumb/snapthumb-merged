@@ -1,2 +1,4 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://snapthumb.vercel.app/sitemap.xml

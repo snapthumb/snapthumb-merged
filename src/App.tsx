@@ -2,18 +2,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PropsWithChildren } from "react";
 
-/**
- * Snapthumb — App.tsx (feature-rich single-file)
- * Dependencies: react, tailwindcss. (framer-motion, lucide not required)
- */
+/** Snapthumb — App.tsx (feature-rich, fully patched & rendered) */
 
 type Mode = "screenshot" | "video";
 
-type ExportPreset = {
-  label: string;
-  w: number;
-  h: number;
-};
+type ExportPreset = { label: string; w: number; h: number };
 
 type OverlayState = {
   src?: string;
@@ -37,7 +30,10 @@ type ProjectState = {
   safeZonesOn: boolean;
   bgColor: string;
 
-  baseImage?: string;
+  
+  transparentBg: boolean;
+  jpegQuality: number;
+baseImage?: string;
   baseName?: string;
 
   videoUrl?: string;
@@ -49,11 +45,7 @@ type ProjectState = {
   overlay: OverlayState;
 };
 
-type HistoryState = {
-  past: ProjectState[];
-  present: ProjectState;
-  future: ProjectState[];
-};
+type HistoryState = { past: ProjectState[]; present: ProjectState; future: ProjectState[] };
 
 const DEFAULT_PRESETS: ExportPreset[] = [
   { label: "1280×720 (HD)", w: 1280, h: 720 },
@@ -81,14 +73,14 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 400) {
     if (t) window.clearTimeout(t);
     t = window.setTimeout(() => fn(...args), ms);
   };
+}
 
-/* Deep clone helper to avoid relying on global structuredClone in older TS/DOM libs */
+/** ✅ deepClone helper (avoids structuredClone for Vercel/node compat) */
 function deepClone<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
-}
 
-/* --------------------------- Initial State Factory ------------------------ */
+/* --------------------------- Initial State --------------------------- */
 
 function initialProject(): ProjectState {
   return {
@@ -99,7 +91,10 @@ function initialProject(): ProjectState {
     gridSize: 20,
     safeZonesOn: true,
     bgColor: "#000000",
-    baseImage: undefined,
+    
+    transparentBg: false,
+    jpegQuality: 0.92,
+baseImage: undefined,
     baseName: undefined,
     videoUrl: undefined,
     videoName: undefined,
@@ -121,23 +116,30 @@ function initialProject(): ProjectState {
   };
 }
 
-/* ***** TS-safe storage loader (fixes ts(2345) string|null) ***** */
+/** ✅ TS-safe loader (narrow null before JSON.parse) */
 function loadProjectFromStorage(): ProjectState | null {
   try {
-    const rawMaybe = localStorage.getItem(LOCAL_KEY);
-    if (rawMaybe == null) return null; // guard: still return null cleanly
-    const parsed = JSON.parse(rawMaybe as string) as ProjectState; // assert non-null
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (!raw) return null;
 
-    // object URLs don't survive reload; clear videoUrl but keep name & timing
+    const parsed = JSON.parse(raw) as Partial<ProjectState>;
     parsed.videoUrl = undefined;
     parsed.videoReady = false;
-    return parsed;
+    const base = initialProject();
+    const merged: ProjectState = {
+      ...base,
+      ...parsed,
+      overlay: { ...base.overlay, ...(parsed.overlay || {}) },
+      videoUrl: undefined,
+      videoReady: false,
+    };
+    return merged;
   } catch {
     return null;
   }
 }
 
-/* ----------------------------- Main Component ---------------------------- */
+/* ----------------------------- App ----------------------------- */
 
 export default function App() {
   const [history, setHistory] = useState<HistoryState>(() => {
@@ -190,21 +192,6 @@ export default function App() {
     });
   }, []);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const z = e.key.toLowerCase() === "z";
-      const y = e.key.toLowerCase() === "y";
-      const metaOrCtrl = e.metaKey || e.ctrlKey;
-      if (metaOrCtrl && z && !e.shiftKey) {
-        e.preventDefault(); undo();
-      } else if ((metaOrCtrl && y) || (metaOrCtrl && z && e.shiftKey)) {
-        e.preventDefault(); redo();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo]);
-
   const autosave = useMemo(
     () =>
       debounce((s: ProjectState) => {
@@ -215,11 +202,171 @@ export default function App() {
       }, 500),
     []
   );
+  useEffect(() => {
+    autosave(state);
+  }, [state, autosave]);
 
-  useEffect(() => { autosave(state); }, [state, autosave]);
+  /* ------------------ Stage scale ------------------ */
 
-  const stageBounds = useStageBounds(state.exportW, state.exportH);
+  const { scale: stageScale } = useStageBounds(state.exportW, state.exportH);
 
+  /* ------------------ Drag handling (move/resize/rotate) ------------------ */
+
+  const dragState = useRef<{
+    kind: "move" | "nw" | "ne" | "sw" | "se" | "rotate" | null;
+    startX: number;
+    startY: number;
+    start: OverlayState | null;
+    cxCss: number;
+    cyCss: number;
+    baseRotation: number;
+    startAngle: number;
+  }>({ kind: null, startX: 0, startY: 0, start: null, cxCss: 0, cyCss: 0, baseRotation: 0, startAngle: 0 });
+
+  const startDrag = useCallback(
+    (kind: "move" | "nw" | "ne" | "sw" | "se" | "rotate", e: React.PointerEvent) => {
+      e.preventDefault();
+      (e.target as Element).setPointerCapture(e.pointerId);
+
+      const start = deepClone(state.overlay);
+      let cxCss = 0, cyCss = 0, baseRotation = start.rotation, startAngle = 0;
+      const rect = stageRef.current?.getBoundingClientRect();
+      if (rect) {
+        cxCss = rect.left + (start.x + start.w / 2) * stageScale;
+        cyCss = rect.top + (start.y + start.h / 2) * stageScale;
+        startAngle = Math.atan2(e.clientY - cyCss, e.clientX - cxCss);
+      }
+
+      dragState.current = {
+        kind,
+        startX: e.clientX,
+        startY: e.clientY,
+        start,
+        cxCss,
+        cyCss,
+        baseRotation,
+        startAngle,
+      };
+    },
+    [state.overlay, stageScale]
+  );
+
+  const onDrag = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragState.current.kind || !dragState.current.start) return;
+      const dxCss = e.clientX - dragState.current.startX;
+      const dyCss = e.clientY - dragState.current.startY;
+      const dx = dxCss / stageScale;
+      const dy = dyCss / stageScale;
+
+      mutate((d: ProjectState) => {
+        const o = d.overlay;
+        const s = dragState.current.start!;
+        const snap = s.snap ? d.gridSize : 0;
+
+        if (dragState.current.kind === "move") {
+          o.x = s.snap ? snapTo(s.x + dx, snap) : s.x + dx;
+          o.y = s.snap ? snapTo(s.y + dy, snap) : s.y + dy;
+        } else {
+          const k = dragState.current.kind;
+          if (k === "nw" || k === "ne" || k === "sw" || k === "se") {
+            let nx = s.x, ny = s.y, nw = s.w, nh = s.h;
+            const aspect = s.w / s.h || 1;
+
+            if (k === "se") {
+              nw = s.w + dx; nh = s.keepAspect ? nw / aspect : s.h + dy;
+            } else if (k === "ne") {
+              nw = s.w + dx; nh = s.keepAspect ? nw / aspect : s.h - dy; ny = s.y + (s.h - nh);
+            } else if (k === "sw") {
+              nw = s.w - dx; nh = s.keepAspect ? nw / aspect : s.h + dy; nx = s.x + (s.w - nw);
+            } else if (k === "nw") {
+              nw = s.w - dx; nh = s.keepAspect ? nw / aspect : s.h - dy;
+              nx = s.x + (s.w - nw); ny = s.y + (s.h - nh);
+            }
+
+            nw = Math.max(20, nw);
+            nh = Math.max(20, nh);
+            if (s.snap) {
+              nx = snapTo(nx, snap); ny = snapTo(ny, snap);
+              nw = Math.max(20, snapTo(nw, snap)); nh = Math.max(20, snapTo(nh, snap));
+            }
+            o.x = nx; o.y = ny; o.w = nw; o.h = nh;
+          } else if (k === "rotate") {
+            const angNow = Math.atan2(e.clientY - dragState.current.cyCss, e.clientX - dragState.current.cxCss);
+            let deg = dragState.current.baseRotation + (angNow - dragState.current.startAngle) * (180 / Math.PI);
+            // Optional snapping when "Snap" toggle is on: snap to 15°
+            if (s.snap) {
+              deg = Math.round(deg / 15) * 15;
+            }
+            o.rotation = clamp(deg, -360, 360);
+          }
+        }
+      }, false);
+    },
+    [mutate, stageScale]
+  );
+
+  const endDrag = useCallback((e: React.PointerEvent) => {
+    if ((e.target as Element).hasPointerCapture(e.pointerId)) {
+      (e.target as Element).releasePointerCapture(e.pointerId);
+    }
+    dragState.current.kind = null;
+    dragState.current.start = null;
+    commit(history.present, true);
+  }, [commit, history.present]);
+
+  /* ---------------- Video handling ---------------- */
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onMeta = () => {
+      mutate((d) => { d.videoDuration = v.duration || 0; d.videoReady = true; }, false);
+    };
+    const onTimeUpdate = () => {
+      mutate((d) => { d.videoTime = v.currentTime || 0; }, false);
+    };
+    v.addEventListener("loadedmetadata", onMeta);
+    v.addEventListener("timeupdate", onTimeUpdate);
+    return () => {
+      v.removeEventListener("loadedmetadata", onMeta);
+      v.removeEventListener("timeupdate", onTimeUpdate);
+    };
+  }, [mutate, state.videoUrl]);
+
+  const seekVideo = useCallback(
+    (t: number) => {
+      const v = videoRef.current; if (!v) return;
+      v.currentTime = clamp(t, 0, Math.max(0, state.videoDuration));
+    },
+    [state.videoDuration]
+  );
+
+  const captureFrameToBackground = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !state.videoReady) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = state.exportW; canvas.height = state.exportH;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+
+    ctx.fillStyle = state.bgColor || "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const vw = v.videoWidth || 1;
+    const vh = v.videoHeight || 1;
+    const scale = Math.max(canvas.width / vw, canvas.height / vh);
+    const dw = vw * scale; const dh = vh * scale;
+    const dx = (canvas.width - dw) / 2; const dy = (canvas.height - dh) / 2;
+    try {
+      ctx.drawImage(v, dx, dy, dw, dh);
+      const dataUrl = canvas.toDataURL("image/png");
+      mutate((d) => {
+        d.baseImage = dataUrl;
+        d.baseName = `${d.videoName || "frame"}@${Math.round(d.videoTime * 1000)}ms.png`;
+      });
+    } catch {}
+  }, [mutate, state.videoReady, state.exportW, state.exportH, state.bgColor, state.videoName, state.videoTime]);
+
+  /* ---------------- File pickers & drops ---------------- */
   const handleDropStage = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault();
@@ -294,141 +441,7 @@ export default function App() {
     [mutate]
   );
 
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const onMeta = () => {
-      mutate((d) => { d.videoDuration = v.duration || 0; d.videoReady = true; }, false);
-    };
-    const onTimeUpdate = () => {
-      mutate((d) => { d.videoTime = v.currentTime || 0; }, false);
-    };
-    v.addEventListener("loadedmetadata", onMeta);
-    v.addEventListener("timeupdate", onTimeUpdate);
-    return () => {
-      v.removeEventListener("loadedmetadata", onMeta);
-      v.removeEventListener("timeupdate", onTimeUpdate);
-    };
-  }, [mutate, state.videoUrl]);
-
-  const seekVideo = useCallback(
-    (t: number) => {
-      const v = videoRef.current; if (!v) return;
-      v.currentTime = clamp(t, 0, Math.max(0, state.videoDuration));
-    },
-    [state.videoDuration]
-  );
-
-  const captureFrameToBackground = useCallback(() => {
-    const v = videoRef.current;
-    if (!v || !state.videoReady) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = state.exportW; canvas.height = state.exportH;
-    const ctx = canvas.getContext("2d"); if (!ctx) return;
-
-    ctx.fillStyle = state.bgColor || "#000";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const vw = v.videoWidth || 1;
-    const vh = v.videoHeight || 1;
-    const scale = Math.max(canvas.width / vw, canvas.height / vh);
-    const dw = vw * scale; const dh = vh * scale;
-    const dx = (canvas.width - dw) / 2; const dy = (canvas.height - dh) / 2;
-    try {
-      ctx.drawImage(v, dx, dy, dw, dh);
-      const dataUrl = canvas.toDataURL("image/png");
-      mutate((d) => {
-        d.baseImage = dataUrl;
-        d.baseName = `${d.videoName || "frame"}@${Math.round(d.videoTime * 1000)}ms.png`;
-      });
-    } catch {}
-  }, [mutate, state.videoReady, state.exportW, state.exportH, state.bgColor, state.videoName, state.videoTime]);
-
-  const dragState = useRef<{
-    kind: "move" | "nw" | "ne" | "sw" | "se" | "rotate" | null;
-    startX: number;
-    startY: number;
-    start: OverlayState | null;
-  }>({ kind: null, startX: 0, startY: 0, start: null });
-
-  const stageScale = stageBounds.scale;
-
-  const startDrag = useCallback(
-    (kind: "move" | "nw" | "ne" | "sw" | "se" | "rotate", e: React.PointerEvent) => {
-      e.preventDefault();
-      (e.target as Element).setPointerCapture(e.pointerId);
-      dragState.current = {
-        kind,
-        startX: e.clientX,
-        startY: e.clientY,
-        start: deepClone(state.overlay),
-      };
-    },
-    [state.overlay]
-  );
-
-  const onDrag = useCallback(
-    (e: React.PointerEvent) => {
-      if (!dragState.current.kind || !dragState.current.start) return;
-      const dxCss = e.clientX - dragState.current.startX;
-      const dyCss = e.clientY - dragState.current.startY;
-      const dx = dxCss / stageScale;
-      const dy = dyCss / stageScale;
-
-      mutate((d) => {
-        const o = d.overlay;
-        const s = dragState.current.start!;
-        const snap = s.snap ? d.gridSize : 0;
-
-        if (dragState.current.kind === "move") {
-          const nx = s.x + dx; const ny = s.y + dy;
-          o.x = s.snap ? snapTo(nx, snap) : nx;
-          o.y = s.snap ? snapTo(ny, snap) : ny;
-          o.x = clamp(o.x, -o.w, d.exportW);
-          o.y = clamp(o.y, -o.h, d.exportH);
-        } else if (["nw", "ne", "sw", "se"].includes(dragState.current.kind)) {
-          const aspect = s.w / s.h || 1;
-          let nx = s.x, ny = s.y, nw = s.w, nh = s.h;
-
-          if (dragState.current.kind === "se") {
-            nw = s.w + dx; nh = s.keepAspect ? nw / aspect : s.h + dy;
-          } else if (dragState.current.kind === "ne") {
-            nw = s.w + dx; nh = s.keepAspect ? nw / aspect : s.h - dy; ny = s.y + (s.h - nh);
-          } else if (dragState.current.kind === "sw") {
-            nw = s.w - dx; nh = s.keepAspect ? nw / aspect : s.h + dy; nx = s.x + (s.w - nw);
-          } else if (dragState.current.kind === "nw") {
-            nw = s.w - dx; nh = s.keepAspect ? nw / aspect : s.h - dy;
-            nx = s.x + (s.w - nw); ny = s.y + (s.h - nh);
-          }
-
-          nw = Math.max(20, nw); nh = Math.max(20, nh);
-          if (s.snap) {
-            nx = snapTo(nx, snap); ny = snapTo(ny, snap);
-            nw = Math.max(20, snapTo(nw, snap)); nh = Math.max(20, snapTo(nh, snap));
-          }
-          o.x = nx; o.y = ny; o.w = nw; o.h = nh;
-        } else if (dragState.current.kind === "rotate") {
-          const stage = stageRef.current; if (!stage) return;
-          const rect = stage.getBoundingClientRect();
-          const cx = rect.left + (d.exportW * stageScale) / 2;
-          const cy = rect.top + (d.exportH * stageScale) / 2;
-          const ang = Math.atan2(e.clientY - cy, e.clientX - cx);
-          o.rotation = Math.round((ang * 180) / Math.PI);
-        }
-      }, false);
-    },
-    [mutate, stageScale]
-  );
-
-  const endDrag = useCallback((e: React.PointerEvent) => {
-    if ((e.target as Element).hasPointerCapture(e.pointerId)) {
-      (e.target as Element).releasePointerCapture(e.pointerId);
-    }
-    dragState.current.kind = null;
-    dragState.current.start = null;
-    commit(history.present, true);
-  }, [commit, history.present]);
-
+  /* ---------------- Export ---------------- */
   const exportPng = useCallback(async () => {
     const canvas =
       exportCanvasRef.current || (exportCanvasRef.current = document.createElement("canvas"));
@@ -459,6 +472,77 @@ export default function App() {
     const base = (state.baseName || "snapthumb").replace(/\.[a-zA-Z0-9]+$/, "");
     downloadDataUrl(`${base}_${state.exportW}x${state.exportH}.png`, dataUrl);
   }, [state]);
+  const copyPng = useCallback(async () => {
+    const canvas =
+      exportCanvasRef.current || (exportCanvasRef.current = document.createElement("canvas"));
+    canvas.width = state.exportW; canvas.height = state.exportH;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+    if (!state.transparentBg) {
+      ctx.fillStyle = state.bgColor || "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    if (state.baseImage) {
+      const img = await loadImage(state.baseImage);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    }
+    if (state.overlay.src) {
+      const o = state.overlay;
+      const img = await loadImage(o.src!);
+      ctx.save();
+      ctx.globalAlpha = clamp(o.opacity, 0, 1);
+      ctx.translate(o.x + o.w / 2, o.y + o.h / 2);
+      ctx.rotate((o.rotation * Math.PI) / 180);
+      ctx.shadowColor = "rgba(0,0,0,0.8)";
+      ctx.shadowBlur = clamp(o.shadow, 0, 60);
+      ctx.drawImage(img, -o.w / 2, -o.h / 2, o.w, o.h);
+      ctx.restore();
+    }
+    try {
+      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+      if (!blob) throw new Error("Clipboard blob failed");
+      // @ts-ignore
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      alert("Copied PNG to clipboard ✅");
+    } catch (err) {
+      try {
+        const dataUrl = canvas.toDataURL("image/png");
+        await navigator.clipboard.writeText(dataUrl);
+        alert("Copied PNG data URL (fallback).");
+      } catch {
+        alert("Clipboard copy failed.");
+      }
+    }
+  }, [state]);
+
+  const exportJpeg = useCallback(async () => {
+    const canvas =
+      exportCanvasRef.current || (exportCanvasRef.current = document.createElement("canvas"));
+    canvas.width = state.exportW; canvas.height = state.exportH;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+    // JPEG has no alpha; if transparentBg is true, force black
+    ctx.fillStyle = state.transparentBg ? "#000" : (state.bgColor || "#000");
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (state.baseImage) {
+      const img = await loadImage(state.baseImage);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    }
+    if (state.overlay.src) {
+      const o = state.overlay;
+      const img = await loadImage(o.src!);
+      ctx.save();
+      ctx.globalAlpha = clamp(o.opacity, 0, 1);
+      ctx.translate(o.x + o.w / 2, o.y + o.h / 2);
+      ctx.rotate((o.rotation * Math.PI) / 180);
+      ctx.shadowColor = "rgba(0,0,0,0.8)";
+      ctx.shadowBlur = clamp(o.shadow, 0, 60);
+      ctx.drawImage(img, -o.w / 2, -o.h / 2, o.w, o.h);
+      ctx.restore();
+    }
+    const base = (state.baseName || "snapthumb").replace(/\.[a-zA-Z0-9]+$/, "");
+    const dataUrl = canvas.toDataURL("image/jpeg", clamp(state.jpegQuality ?? 0.92, 0.01, 1));
+    downloadDataUrl(`${base}_${state.exportW}x${state.exportH}.jpg`, dataUrl);
+  }, [state]);
+
 
   const setPreset = useCallback(
     (p: ExportPreset) => {
@@ -485,13 +569,51 @@ export default function App() {
     mutate((d) => { d.overlay.src = undefined; });
   }, [mutate]);
 
+  
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) { redo(); } else { undo(); }
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo(); return;
+      }
+      const step = e.shiftKey ? 10 : 1;
+      if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","[","]"].includes(e.key)) {
+        e.preventDefault();
+        mutate((d) => {
+          const o = d.overlay;
+          if (e.key === "ArrowLeft") o.x -= step;
+          if (e.key === "ArrowRight") o.x += step;
+          if (e.key === "ArrowUp") o.y -= step;
+          if (e.key === "ArrowDown") o.y += step;
+          if (e.key === "[") o.rotation = clamp(o.rotation - (e.shiftKey ? 15 : 1), -360, 360);
+          if (e.key === "]") o.rotation = clamp(o.rotation + (e.shiftKey ? 15 : 1), -360, 360);
+        }, false);
+        return;
+      }
+      if (e.key.toLowerCase() === "g") { mutate((d)=>void(d.gridOn=!d.gridOn), false); return; }
+      if (e.key.toLowerCase() === "s") { mutate((d)=>void(d.safeZonesOn=!d.safeZonesOn), false); return; }
+      if (e.key.toLowerCase() === "k") { mutate((d)=>void(d.overlay.keepAspect=!d.overlay.keepAspect), false); return; }
+      if (e.key.toLowerCase() === "n") { mutate((d)=>void(d.overlay.snap=!d.overlay.snap), false); return; }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [mutate, undo, redo]);
+
+  /* ------------------- Render ------------------- */
   return (
     <div className="min-h-screen w-full bg-neutral-950 text-neutral-100">
+      {/* Top bar */}
       <div className="sticky top-0 z-30 w-full border-b border-neutral-800 bg-neutral-900/80 backdrop-blur">
         <div className="mx-auto max-w-[1400px] px-3 sm:px-4">
           <div className="flex flex-wrap items-center gap-2 py-2">
             <div className="mr-3 select-none font-semibold tracking-wide">
-              Snapthumb <span className="text-neutral-400">Pro</span>
+              Snapthumb
             </div>
 
             <Segmented
@@ -536,6 +658,10 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700"
                 onClick={exportPng}>Export PNG</button>
+              <button className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700"
+                onClick={exportJpeg}>Export JPEG</button>
+              <button className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700"
+                onClick={copyPng}>Copy</button>
               <button className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700 disabled:opacity-40"
                 onClick={captureFrameToBackground}
                 disabled={state.mode !== "video" || !state.videoReady}
@@ -553,7 +679,9 @@ export default function App() {
         </div>
       </div>
 
+      {/* Main two-column layout */}
       <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-4 px-3 py-4 sm:px-4 lg:grid-cols-[1fr_320px]">
+        {/* Left: Stage */}
         <div>
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <FileButton label="Pick Background" accept="image/*" onPick={onPickBackground} />
@@ -567,31 +695,31 @@ export default function App() {
           <div
             ref={stageRef}
             className="relative mx-auto touch-none select-none overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900"
-            style={{ width: Math.round(state.exportW * stageBounds.scale), height: Math.round(state.exportH * stageBounds.scale) }}
+            style={{ width: Math.round(state.exportW * stageScale), height: Math.round(state.exportH * stageScale) }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={handleDropStage}
           >
             <StageBackground
               exportW={state.exportW}
               exportH={state.exportH}
-              scale={stageBounds.scale}
+              scale={stageScale}
               baseImage={state.baseImage}
               bgColor={state.bgColor}
               baseImgRef={baseImgRef}
             />
 
             {state.gridOn && (
-              <GridOverlay w={state.exportW} h={state.exportH} scale={stageBounds.scale} cell={state.gridSize} />
+              <GridOverlay w={state.exportW} h={state.exportH} scale={stageScale} cell={state.gridSize} />
             )}
 
             {state.safeZonesOn && (
-              <SafeZoneOverlay w={state.exportW} h={state.exportH} scale={stageBounds.scale} />
+              <SafeZoneOverlay w={state.exportW} h={state.exportH} scale={stageScale} />
             )}
 
             {state.overlay.src && (
               <OverlayView
                 overlay={state.overlay}
-                scale={stageBounds.scale}
+                scale={stageScale}
                 imgRef={overlayImgRef}
                 onStartDrag={startDrag}
                 onDrag={onDrag}
@@ -640,6 +768,7 @@ export default function App() {
           )}
         </div>
 
+        {/* Right: Panels */}
         <div className="sticky top-[56px] h-fit space-y-4">
           <Panel title="Background">
             <div className="space-y-2">
@@ -648,6 +777,16 @@ export default function App() {
               <div className="text-xs text-neutral-400">
                 Background color shows behind the base image (letterboxing) and before capture.
               </div>
+            </div>
+            <div className="mt-2 flex gap-2">
+              <button className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs hover:bg-neutral-800"
+                onClick={() => mutate((d) => { d.overlay.x = (d.exportW - d.overlay.w)/2; d.overlay.y = (d.exportH - d.overlay.h)/2; })}>
+                Center
+              </button>
+              <button className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs hover:bg-neutral-800"
+                onClick={() => mutate((d) => { d.overlay.rotation = 0; })}>
+                Reset Rotation
+              </button>
             </div>
           </Panel>
 
@@ -669,7 +808,7 @@ export default function App() {
                 onChange={(v) => mutate((d) => void (d.overlay.w = Math.max(10, v)))} />
               <NumberBox label="H" value={Math.round(state.overlay.h)} min={10} step={1}
                 onChange={(v) => mutate((d) => void (d.overlay.h = Math.max(10, v)))} />
-              <NumberBox label="Rot" value={Math.round(state.overlay.rotation)} min={-180} max={180} step={1}
+              <NumberBox label="Rot" value={Math.round(state.overlay.rotation)} min={-360} max={360} step={1}
                 onChange={(v) => mutate((d) => void (d.overlay.rotation = v))} />
               <NumberBox label="Opacity" value={Math.round(state.overlay.opacity * 100)} min={0} max={100} step={1}
                 onChange={(v) => mutate((d) => void (d.overlay.opacity = clamp(v / 100, 0, 1)))} suffix="%" />
@@ -680,13 +819,23 @@ export default function App() {
               <Switch label="Snap" checked={state.overlay.snap}
                 onChange={(v) => mutate((d) => void (d.overlay.snap = v))} />
             </div>
+            <div className="mt-2 flex gap-2">
+              <button className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs hover:bg-neutral-800"
+                onClick={() => mutate((d) => { d.overlay.x = (d.exportW - d.overlay.w)/2; d.overlay.y = (d.exportH - d.overlay.h)/2; })}>
+                Center
+              </button>
+              <button className="rounded-lg border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs hover:bg-neutral-800"
+                onClick={() => mutate((d) => { d.overlay.rotation = 0; })}>
+                Reset Rotation
+              </button>
+            </div>
           </Panel>
 
           <Panel title="Shortcuts">
             <ul className="list-disc pl-5 text-sm text-neutral-300">
               <li>Undo/Redo: ⌘/Ctrl+Z, ⌘/Ctrl+Shift+Z</li>
-              <li>Drag & drop: image = background (first), next image = overlay, video = Video mode</li>
-              <li>Resize from corners; use <em>Aspect Lock</em> to keep proportions</li>
+              <li>Drag & drop: first image → background, next image → overlay; videos in Video mode</li>
+              <li>Resize from corners; hold <em>Snap</em> to snap rotation to 15°</li>
             </ul>
           </Panel>
         </div>
@@ -695,21 +844,7 @@ export default function App() {
   );
 }
 
-/* --------------------------------- Hooks --------------------------------- */
-
-function useStageBounds(exportW: number, exportH: number) {
-  const [containerW, setContainerW] = useState<number>(() => window.innerWidth);
-  useEffect(() => {
-    const onResize = () => setContainerW(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  const maxW = Math.min(1200, containerW - 40);
-  const scale = Math.min(1, maxW / exportW);
-  return { scale };
-}
-
-/* ------------------------------ UI Subcomponents ------------------------------ */
+/* ------------------------------- UI Components ------------------------------- */
 
 function Panel({
   title,
@@ -885,6 +1020,18 @@ function TimeBadge({ time }: { time: number }) {
 
 /* ------------------------------ Stage elements ------------------------------ */
 
+function useStageBounds(exportW: number, exportH: number) {
+  const [containerW, setContainerW] = useState<number>(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setContainerW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const maxW = Math.min(1200, containerW - 40);
+  const scale = Math.min(1, maxW / exportW);
+  return { scale };
+}
+
 function StageBackground({
   exportW,
   exportH,
@@ -921,7 +1068,7 @@ function StageBackground({
 function GridOverlay({ w, h, scale, cell }: { w: number; h: number; scale: number; cell: number }) {
   const cols = Math.ceil(w / cell);
   const rows = Math.ceil(h / cell);
-  const lines = [];
+  const lines: JSX.Element[] = [];
   for (let i = 1; i < cols; i++) {
     const x = Math.round(i * cell * scale);
     lines.push(<div key={`v${i}`} className="absolute top-0 h-full border-l border-neutral-700/40" style={{ left: x }} />);
@@ -999,15 +1146,18 @@ function OverlayView({
         draggable={false}
         onPointerDown={(e) => onStartDrag("move", e)}
       />
+      {/* Corner handles */}
       <div className={`${handleStyle} left-0 top-0 cursor-nwse-resize`} onPointerDown={(e) => onStartDrag("nw", e)} />
       <div className={`${handleStyle} left-full top-0 cursor-nesw-resize`} onPointerDown={(e) => onStartDrag("ne", e)} />
       <div className={`${handleStyle} left-0 top-full cursor-nesw-resize`} onPointerDown={(e) => onStartDrag("sw", e)} />
       <div className={`${handleStyle} left-full top-full cursor-nwse-resize`} onPointerDown={(e) => onStartDrag("se", e)} />
+      {/* Rotate handle */}
       <div
         className="absolute left-1/2 top-0 z-20 h-3 w-3 -translate-x-1/2 -translate-y-6 rounded-full border border-neutral-200 bg-neutral-100 cursor-crosshair"
         onPointerDown={(e) => onStartDrag("rotate", e)}
         title="Rotate"
       />
+      {/* Bounding box */}
       <div className="pointer-events-none absolute inset-0 rounded-md border border-neutral-200/60" />
     </div>
   );
