@@ -2,11 +2,15 @@
   "headers": [
     {
       "source": "/(.*)\\.(png|webp|jpg|svg|gif|ico|css|js|woff2)",
-      "headers": [{ "key": "Cache-Control", "value": "public,max-age=31536000,immutable" }]
+      "headers": [
+        { "key": "Cache-Control", "value": "public,max-age=31536000,immutable" }
+      ]
     },
     {
-      "source": "/(manifest.webmanifest|sitemap.xml|robots.txt|og.png)",
-      "headers": [{ "key": "Cache-Control", "value": "public,max-age=600" }]
+      "source": "/(manifest.webmanifest|sitemap.xml|robots.txt|snapthumb-preview.png|favicon.png)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public,max-age=600" }
+      ]
     }
   ]
 }
