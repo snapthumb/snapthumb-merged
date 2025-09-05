@@ -1,4 +1,8 @@
 {
+  "redirects": [
+    { "source": "/privacy.html", "destination": "/privacy", "permanent": true },
+    { "source": "/terms.html", "destination": "/terms", "permanent": true }
+  ],
   "headers": [
     {
       "source": "/(.*)\\.(png|webp|jpg|svg|gif|ico|css|js|woff2)",
