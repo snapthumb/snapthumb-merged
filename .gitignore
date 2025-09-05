@@ -1,7 +1,4 @@
-# macOS
 .DS_Store
-
-# Node / Web
 node_modules/
 dist/
 build/
@@ -11,6 +8,5 @@ coverage/
 .env
 .env.*
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+yarn-*.log*
 pnpm-debug.log*
