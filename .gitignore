@@ -1,5 +1,12 @@
-node_modules
-dist
-.vercel
 .DS_Store
-*.log
+node_modules/
+dist/
+build/
+.cache/
+.next/
+coverage/
+.env
+.env.*
+npm-debug.log*
+yarn-*.log*
+pnpm-debug.log*
