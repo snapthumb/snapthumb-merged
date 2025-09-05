@@ -1,5 +1,16 @@
-node_modules
-dist
-.vercel
+# macOS
 .DS_Store
-*.log
+
+# Node / Web
+node_modules/
+dist/
+build/
+.cache/
+.next/
+coverage/
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
