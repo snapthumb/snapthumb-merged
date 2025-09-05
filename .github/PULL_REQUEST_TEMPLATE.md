@@ -9,5 +9,4 @@
 
 ## Checklist
 - [ ] CI green
-- [ ] Docs/README updated (if needed)
-- [ ] No direct commits to protected branches
+- [ ] Docs updated if needed
